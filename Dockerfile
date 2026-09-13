@@ -14,4 +14,4 @@ COPY package*.json ./
 RUN npm install -g supergateway
 ENV NODE_ENV=production
 EXPOSE 8000
-CMD ["sh", "-c", "supergateway --stdio \"node build/index.js\" --outputTransport streamableHttp --stateful --sessionTimeout 3600000 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "supergateway --stdio \"node build/index.js\" --outputTransport streamableHttp --stateful --sessionTimeout 3600000 --healthEndpoint /health --port ${PORT:-8000}"]
