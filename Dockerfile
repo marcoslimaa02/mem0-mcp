@@ -1,17 +1,5 @@
-# syntax=docker/dockerfile:1
-FROM node:lts-alpine AS builder
-WORKDIR /app
-COPY package*.json tsconfig.json ./
-COPY src ./src
-RUN npm install --ignore-scripts
-RUN npm run build
-
-FROM node:lts-alpine AS runner
-WORKDIR /app
-COPY --from=builder /app/build ./build
-COPY --from=builder /app/node_modules ./node_modules
-COPY package*.json ./
-RUN npm install -g supergateway
+FROM supercorp/supergateway:latest
 ENV NODE_ENV=production
 EXPOSE 8000
-CMD ["sh", "-c", "supergateway --stdio \"node build/index.js\" --outputTransport streamableHttp --stateful --sessionTimeout 3600000 --healthEndpoint /health --port ${PORT:-8000}"]
+ENTRYPOINT ["sh", "-c"]
+CMD ["supergateway --stdio \"npx -y @pinkpixel/mem0-mcp\" --outputTransport streamableHttp --stateful --sessionTimeout 3600000 --healthEndpoint /health --host 0.0.0.0 --port ${PORT:-8000}"]
