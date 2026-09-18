@@ -34,51 +34,45 @@ const TOOLS = [
   { name: 'search_memories', description: 'Search stored memories for the user, optionally scoped to one sector.',
     inputSchema: { type: 'object', properties: { query: { type: 'string' }, sector: { type: 'string', enum: SECTORS.concat(['all']) } }, required: ['query'] } },
   { name: 'consolidate_memories', description: 'Merge and compact all memories in a sector into fewer, denser memories, deleting the originals.',
-    inputSchema: { type: 'object', properties: { sector: { type: 'string', enum: SECTORS } }, required: ['sector'] } },
-  { name: 'debug_list_all', description: 'DEBUG: list all memories for the user, no sector filter, compact summary.',
-    inputSchema: { type: 'object', properties: {} } }
+    inputSchema: { type: 'object', properties: { sector: { type: 'string', enum: SECTORS } }, required: ['sector'] } }
 ];
+
+function sectorFilters(sector) {
+  return (sector && sector !== 'all' && SECTORS.includes(sector))
+    ? { user_id: DEFAULT_USER_ID, sector: sector }
+    : { user_id: DEFAULT_USER_ID };
+}
+
+async function listSectorMemories(sector) {
+  const r = await callMem0('/v3/memories/?page=1&page_size=100', { filters: sectorFilters(sector) });
+  return (r.json && r.json.results) || [];
+}
 
 async function handleToolCall(name, args) {
   if (name === 'add_memory') {
     const sector = SECTORS.includes(args.sector) ? args.sector : 'random';
-    const r = await callMem0('/v3/memories/add/', { messages: [{ role: 'user', content: args.text }], user_id: DEFAULT_USER_ID, agent_id: sector });
+    const r = await callMem0('/v3/memories/add/', { messages: [{ role: 'user', content: args.text }], user_id: DEFAULT_USER_ID, metadata: { sector: sector } });
     return { content: [{ type: 'text', text: JSON.stringify(r.json) }] };
   }
   if (name === 'search_memories') {
-    const filters = (args.sector && args.sector !== 'all' && SECTORS.includes(args.sector))
-      ? { user_id: DEFAULT_USER_ID, agent_id: args.sector }
-      : { user_id: DEFAULT_USER_ID };
-    const r = await callMem0('/v3/memories/search/', { query: args.query, filters });
+    const r = await callMem0('/v3/memories/search/', { query: args.query, filters: sectorFilters(args.sector) });
     return { content: [{ type: 'text', text: JSON.stringify(r.json) }] };
   }
   if (name === 'consolidate_memories') {
     const sector = SECTORS.includes(args.sector) ? args.sector : 'random';
-    const r = await callMem0('/v3/memories/?page=1&page_size=100', { filters: { user_id: DEFAULT_USER_ID, agent_id: sector } });
-    const items = (r.json && (r.json.results || r.json.memories || r.json.data)) || [];
+    const items = await listSectorMemories(sector);
     if (items.length < 5) {
       return { content: [{ type: 'text', text: JSON.stringify({ skipped: true, count: items.length }) }] };
     }
-    const combinedText = items.map(m => '- ' + (m.memory || m.text || '')).join('\n');
-    const addResult = await callMem0('/v3/memories/add/', { messages: [{ role: 'user', content: 'Consolidate:\n' + combinedText }], user_id: DEFAULT_USER_ID, agent_id: sector });
+    const combinedText = items.map(m => '- ' + (m.memory || '')).join('\n');
+    const addResult = await callMem0('/v3/memories/add/', { messages: [{ role: 'user', content: 'Consolidate these facts, keeping only the distinct still-relevant ones:\n' + combinedText }], user_id: DEFAULT_USER_ID, metadata: { sector: sector, consolidated: true } });
     let deleted = 0;
     for (const m of items) {
-      const id = m.id || m.memory_id;
-      if (!id) continue;
-      await callMem0Raw('DELETE', '/v1/memories/' + id + '/', null);
+      if (!m.id) continue;
+      await callMem0Raw('DELETE', '/v1/memories/' + m.id + '/', null);
       deleted += 1;
     }
-    return { content: [{ type: 'text', text: JSON.stringify({ before_count: items.length, deleted }) }] };
-  }
-  if (name === 'debug_list_all') {
-    const r = await callMem0('/v3/memories/?page=1&page_size=50', { filters: { user_id: DEFAULT_USER_ID } });
-    const items = (r.json && (r.json.results || r.json.memories || r.json.data)) || [];
-    const summary = items.map(m => ({
-      memory: m.memory ? String(m.memory).slice(0, 50) : null,
-      agent_id: m.agent_id === undefined ? 'MISSING_KEY' : m.agent_id,
-      keys: Object.keys(m)
-    }));
-    return { content: [{ type: 'text', text: JSON.stringify({ status: r.status, raw_top_keys: Object.keys(r.json || {}), count: items.length, summary: summary.slice(0, 5) }) }] };
+    return { content: [{ type: 'text', text: JSON.stringify({ before_count: items.length, deleted, add_status: addResult.json && addResult.json.status }) }] };
   }
   return { content: [{ type: 'text', text: 'Unknown tool: ' + name }], isError: true };
 }
@@ -100,7 +94,7 @@ const server = http.createServer((req, res) => {
       catch (e) { sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); return; }
       const { id, method, params } = msg;
       if (method === 'initialize') {
-        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '2.1.0-debug' } } });
+        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '3.0.0' } } });
         return;
       }
       if (method === 'notifications/initialized') { res.writeHead(202); res.end(); return; }
