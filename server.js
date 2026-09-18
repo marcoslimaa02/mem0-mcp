@@ -34,12 +34,14 @@ const TOOLS = [
   { name: 'search_memories', description: 'Search stored memories for the user, optionally scoped to one sector.',
     inputSchema: { type: 'object', properties: { query: { type: 'string' }, sector: { type: 'string', enum: SECTORS.concat(['all']) } }, required: ['query'] } },
   { name: 'consolidate_memories', description: 'Merge and compact all memories in a sector into fewer, denser memories, deleting the originals.',
-    inputSchema: { type: 'object', properties: { sector: { type: 'string', enum: SECTORS } }, required: ['sector'] } }
+    inputSchema: { type: 'object', properties: { sector: { type: 'string', enum: SECTORS } }, required: ['sector'] } },
+  { name: 'debug_search', description: 'DEBUG raw search with arbitrary filters JSON string.',
+    inputSchema: { type: 'object', properties: { query: { type: 'string' }, filters_json: { type: 'string' } }, required: ['query', 'filters_json'] } }
 ];
 
 function sectorFilters(sector) {
   return (sector && sector !== 'all' && SECTORS.includes(sector))
-    ? { user_id: DEFAULT_USER_ID, sector: sector }
+    ? { user_id: DEFAULT_USER_ID, metadata: { sector: sector } }
     : { user_id: DEFAULT_USER_ID };
 }
 
@@ -57,6 +59,12 @@ async function handleToolCall(name, args) {
   if (name === 'search_memories') {
     const r = await callMem0('/v3/memories/search/', { query: args.query, filters: sectorFilters(args.sector) });
     return { content: [{ type: 'text', text: JSON.stringify(r.json) }] };
+  }
+  if (name === 'debug_search') {
+    let filters;
+    try { filters = JSON.parse(args.filters_json); } catch (e) { return { content: [{ type: 'text', text: 'bad json' }] }; }
+    const r = await callMem0('/v3/memories/search/', { query: args.query, filters });
+    return { content: [{ type: 'text', text: JSON.stringify(r) }] };
   }
   if (name === 'consolidate_memories') {
     const sector = SECTORS.includes(args.sector) ? args.sector : 'random';
@@ -94,7 +102,7 @@ const server = http.createServer((req, res) => {
       catch (e) { sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); return; }
       const { id, method, params } = msg;
       if (method === 'initialize') {
-        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '3.0.0' } } });
+        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '3.1.0-debug' } } });
         return;
       }
       if (method === 'notifications/initialized') { res.writeHead(202); res.end(); return; }
