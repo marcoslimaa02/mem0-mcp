@@ -29,14 +29,12 @@ function callMem0Raw(method, path, body) {
 function callMem0(path, body) { return callMem0Raw('POST', path, body); }
 
 const TOOLS = [
-  { name: 'add_memory', description: 'Store a new memory for the user, tagged with a sector.',
-    inputSchema: { type: 'object', properties: { text: { type: 'string' }, sector: { type: 'string', enum: SECTORS } }, required: ['text', 'sector'] } },
+  { name: 'add_memory', description: 'Store a new memory for the user, tagged with a sector: work (Odoo/Lotts), studies (college), or random (everything else).',
+    inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'The memory text to store.' }, sector: { type: 'string', enum: SECTORS, description: 'Which sector this memory belongs to.' } }, required: ['text', 'sector'] } },
   { name: 'search_memories', description: 'Search stored memories for the user, optionally scoped to one sector.',
-    inputSchema: { type: 'object', properties: { query: { type: 'string' }, sector: { type: 'string', enum: SECTORS.concat(['all']) } }, required: ['query'] } },
-  { name: 'consolidate_memories', description: 'Merge and compact all memories in a sector into fewer, denser memories, deleting the originals.',
-    inputSchema: { type: 'object', properties: { sector: { type: 'string', enum: SECTORS } }, required: ['sector'] } },
-  { name: 'debug_search', description: 'DEBUG raw search with arbitrary filters JSON string.',
-    inputSchema: { type: 'object', properties: { query: { type: 'string' }, filters_json: { type: 'string' } }, required: ['query', 'filters_json'] } }
+    inputSchema: { type: 'object', properties: { query: { type: 'string' }, sector: { type: 'string', enum: SECTORS.concat(['all']), description: 'Limit to one sector, or all to search everything.' } }, required: ['query'] } },
+  { name: 'consolidate_memories', description: 'Merge and compact all memories in a sector into fewer, denser memories, deleting the originals. Use occasionally, not on every conversation.',
+    inputSchema: { type: 'object', properties: { sector: { type: 'string', enum: SECTORS } }, required: ['sector'] } }
 ];
 
 function sectorFilters(sector) {
@@ -59,12 +57,6 @@ async function handleToolCall(name, args) {
   if (name === 'search_memories') {
     const r = await callMem0('/v3/memories/search/', { query: args.query, filters: sectorFilters(args.sector) });
     return { content: [{ type: 'text', text: JSON.stringify(r.json) }] };
-  }
-  if (name === 'debug_search') {
-    let filters;
-    try { filters = JSON.parse(args.filters_json); } catch (e) { return { content: [{ type: 'text', text: 'bad json' }] }; }
-    const r = await callMem0('/v3/memories/search/', { query: args.query, filters });
-    return { content: [{ type: 'text', text: JSON.stringify(r) }] };
   }
   if (name === 'consolidate_memories') {
     const sector = SECTORS.includes(args.sector) ? args.sector : 'random';
@@ -102,7 +94,7 @@ const server = http.createServer((req, res) => {
       catch (e) { sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); return; }
       const { id, method, params } = msg;
       if (method === 'initialize') {
-        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '3.1.0-debug' } } });
+        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '4.0.0' } } });
         return;
       }
       if (method === 'notifications/initialized') { res.writeHead(202); res.end(); return; }
