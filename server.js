@@ -44,7 +44,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         text: { type: 'string', description: 'The memory text to store.' },
-        sector: { type: 'string', enum: SECTORS, description: 'Which sector this memory belongs to: work (Odoo/Lotts), studies (college), or random (everything else).' }
+        sector: { type: 'string', enum: SECTORS, description: 'Which sector this memory belongs to.' }
       },
       required: ['text', 'sector']
     }
@@ -56,9 +56,21 @@ const TOOLS = [
       type: 'object',
       properties: {
         query: { type: 'string', description: 'The search query.' },
-        sector: { type: 'string', enum: SECTORS.concat(['all']), description: 'Limit the search to one sector (work, studies, random), or all to search everything.' }
+        sector: { type: 'string', enum: SECTORS.concat(['all']), description: 'Limit the search to one sector, or all.' }
       },
       required: ['query']
+    }
+  },
+  {
+    name: 'debug_search',
+    description: 'DEBUG: raw search with arbitrary filters JSON string.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        filters_json: { type: 'string', description: 'A JSON string for the filters object.' }
+      },
+      required: ['query', 'filters_json']
     }
   }
 ];
@@ -77,10 +89,13 @@ async function handleToolCall(name, args) {
     const filters = (args.sector && args.sector !== 'all' && SECTORS.includes(args.sector))
       ? { user_id: DEFAULT_USER_ID, agent_id: args.sector }
       : { user_id: DEFAULT_USER_ID };
-    const r = await callMem0('/v3/memories/search/', {
-      query: args.query,
-      filters
-    });
+    const r = await callMem0('/v3/memories/search/', { query: args.query, filters });
+    return { content: [{ type: 'text', text: JSON.stringify(r) }] };
+  }
+  if (name === 'debug_search') {
+    let filters;
+    try { filters = JSON.parse(args.filters_json); } catch (e) { return { content: [{ type: 'text', text: 'bad json: ' + e.message }] }; }
+    const r = await callMem0('/v3/memories/search/', { query: args.query, filters });
     return { content: [{ type: 'text', text: JSON.stringify(r) }] };
   }
   return { content: [{ type: 'text', text: 'Unknown tool: ' + name }], isError: true };
@@ -123,7 +138,7 @@ const server = http.createServer((req, res) => {
           result: {
             protocolVersion: '2025-03-26',
             capabilities: { tools: {} },
-            serverInfo: { name: 'mem0-simple-proxy', version: '1.2.0' }
+            serverInfo: { name: 'mem0-simple-proxy', version: '1.3.0-debug' }
           }
         });
         return;
