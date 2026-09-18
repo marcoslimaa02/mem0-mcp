@@ -75,13 +75,13 @@ async function handleToolCall(name, args) {
   }
   if (name === 'search_memories') {
     const filters = (args.sector && args.sector !== 'all' && SECTORS.includes(args.sector))
-      ? { AND: [{ user_id: DEFAULT_USER_ID }, { agent_id: args.sector }] }
+      ? { user_id: DEFAULT_USER_ID, agent_id: args.sector }
       : { user_id: DEFAULT_USER_ID };
     const r = await callMem0('/v3/memories/search/', {
       query: args.query,
       filters
     });
-    return { content: [{ type: 'text', text: JSON.stringify(r.json) }] };
+    return { content: [{ type: 'text', text: JSON.stringify(r) }] };
   }
   return { content: [{ type: 'text', text: 'Unknown tool: ' + name }], isError: true };
 }
@@ -123,7 +123,7 @@ const server = http.createServer((req, res) => {
           result: {
             protocolVersion: '2025-03-26',
             capabilities: { tools: {} },
-            serverInfo: { name: 'mem0-simple-proxy', version: '1.1.0' }
+            serverInfo: { name: 'mem0-simple-proxy', version: '1.2.0' }
           }
         });
         return;
