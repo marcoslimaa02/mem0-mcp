@@ -5,6 +5,8 @@ const PORT = process.env.PORT || 8000;
 const MEM0_API_KEY = process.env.MEM0_API_KEY || '';
 const DEFAULT_USER_ID = process.env.DEFAULT_USER_ID || '';
 
+const SECTORS = ['work', 'studies', 'random'];
+
 function callMem0(path, body) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
@@ -37,19 +39,25 @@ function callMem0(path, body) {
 const TOOLS = [
   {
     name: 'add_memory',
-    description: 'Store a new memory for the user.',
+    description: 'Store a new memory for the user, tagged with a sector.',
     inputSchema: {
       type: 'object',
-      properties: { text: { type: 'string', description: 'The memory text to store.' } },
-      required: ['text']
+      properties: {
+        text: { type: 'string', description: 'The memory text to store.' },
+        sector: { type: 'string', enum: SECTORS, description: 'Which sector this memory belongs to: work (Odoo/Lotts), studies (college), or random (everything else).' }
+      },
+      required: ['text', 'sector']
     }
   },
   {
     name: 'search_memories',
-    description: 'Search stored memories for the user.',
+    description: 'Search stored memories for the user, optionally scoped to one sector.',
     inputSchema: {
       type: 'object',
-      properties: { query: { type: 'string', description: 'The search query.' } },
+      properties: {
+        query: { type: 'string', description: 'The search query.' },
+        sector: { type: 'string', enum: SECTORS.concat(['all']), description: 'Limit the search to one sector (work, studies, random), or all to search everything.' }
+      },
       required: ['query']
     }
   }
@@ -57,16 +65,21 @@ const TOOLS = [
 
 async function handleToolCall(name, args) {
   if (name === 'add_memory') {
+    const sector = SECTORS.includes(args.sector) ? args.sector : 'random';
     const r = await callMem0('/v3/memories/add/', {
       messages: [{ role: 'user', content: args.text }],
-      user_id: DEFAULT_USER_ID
+      user_id: DEFAULT_USER_ID,
+      agent_id: sector
     });
     return { content: [{ type: 'text', text: JSON.stringify(r.json) }] };
   }
   if (name === 'search_memories') {
+    const filters = (args.sector && args.sector !== 'all' && SECTORS.includes(args.sector))
+      ? { AND: [{ user_id: DEFAULT_USER_ID }, { agent_id: args.sector }] }
+      : { user_id: DEFAULT_USER_ID };
     const r = await callMem0('/v3/memories/search/', {
       query: args.query,
-      filters: { user_id: DEFAULT_USER_ID }
+      filters
     });
     return { content: [{ type: 'text', text: JSON.stringify(r.json) }] };
   }
@@ -110,7 +123,7 @@ const server = http.createServer((req, res) => {
           result: {
             protocolVersion: '2025-03-26',
             capabilities: { tools: {} },
-            serverInfo: { name: 'mem0-simple-proxy', version: '1.0.0' }
+            serverInfo: { name: 'mem0-simple-proxy', version: '1.1.0' }
           }
         });
         return;
