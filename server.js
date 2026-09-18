@@ -7,34 +7,29 @@ const DEFAULT_USER_ID = process.env.DEFAULT_USER_ID || '';
 
 const SECTORS = ['work', 'studies', 'random'];
 
-function callMem0(path, body) {
+function callMem0Raw(method, path, body) {
   return new Promise((resolve, reject) => {
-    const data = JSON.stringify(body);
-    const req = https.request({
-      hostname: 'api.mem0.ai',
-      path,
-      method: 'POST',
-      headers: {
-        'Authorization': 'Token ' + MEM0_API_KEY,
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(data)
-      }
-    }, res => {
+    const data = body ? JSON.stringify(body) : null;
+    const headers = {
+      'Authorization': 'Token ' + MEM0_API_KEY,
+      'Content-Type': 'application/json'
+    };
+    if (data) headers['Content-Length'] = Buffer.byteLength(data);
+    const req = https.request({ hostname: 'api.mem0.ai', path, method, headers }, res => {
       let chunks = '';
       res.on('data', c => chunks += c);
       res.on('end', () => {
-        try {
-          resolve({ status: res.statusCode, json: JSON.parse(chunks || '{}') });
-        } catch (e) {
-          resolve({ status: res.statusCode, json: { raw: chunks } });
-        }
+        try { resolve({ status: res.statusCode, json: JSON.parse(chunks || '{}') }); }
+        catch (e) { resolve({ status: res.statusCode, json: { raw: chunks } }); }
       });
     });
     req.on('error', reject);
-    req.write(data);
+    if (data) req.write(data);
     req.end();
   });
 }
+
+function callMem0(path, body) { return callMem0Raw('POST', path, body); }
 
 const TOOLS = [
   {
@@ -43,8 +38,8 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        text: { type: 'string', description: 'The memory text to store.' },
-        sector: { type: 'string', enum: SECTORS, description: 'Which sector this memory belongs to.' }
+        text: { type: 'string' },
+        sector: { type: 'string', enum: SECTORS }
       },
       required: ['text', 'sector']
     }
@@ -55,23 +50,21 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'The search query.' },
-        sector: { type: 'string', enum: SECTORS.concat(['all']), description: 'Limit the search to one sector, or all.' }
+        query: { type: 'string' },
+        sector: { type: 'string', enum: SECTORS.concat(['all']) }
       },
       required: ['query']
     }
   },
   {
     name: 'debug_search',
-    description: 'DEBUG: raw search with arbitrary filters JSON string.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string' },
-        filters_json: { type: 'string', description: 'A JSON string for the filters object.' }
-      },
-      required: ['query', 'filters_json']
-    }
+    description: 'DEBUG raw search.',
+    inputSchema: { type: 'object', properties: { query: { type: 'string' }, filters_json: { type: 'string' } }, required: ['query', 'filters_json'] }
+  },
+  {
+    name: 'debug_event',
+    description: 'DEBUG get event status by id.',
+    inputSchema: { type: 'object', properties: { event_id: { type: 'string' } }, required: ['event_id'] }
   }
 ];
 
@@ -94,8 +87,12 @@ async function handleToolCall(name, args) {
   }
   if (name === 'debug_search') {
     let filters;
-    try { filters = JSON.parse(args.filters_json); } catch (e) { return { content: [{ type: 'text', text: 'bad json: ' + e.message }] }; }
+    try { filters = JSON.parse(args.filters_json); } catch (e) { return { content: [{ type: 'text', text: 'bad json' }] }; }
     const r = await callMem0('/v3/memories/search/', { query: args.query, filters });
+    return { content: [{ type: 'text', text: JSON.stringify(r) }] };
+  }
+  if (name === 'debug_event') {
+    const r = await callMem0Raw('GET', '/v1/event/' + args.event_id + '/', null);
     return { content: [{ type: 'text', text: JSON.stringify(r) }] };
   }
   return { content: [{ type: 'text', text: 'Unknown tool: ' + name }], isError: true };
@@ -103,10 +100,7 @@ async function handleToolCall(name, args) {
 
 function sendJson(res, status, obj) {
   const data = JSON.stringify(obj);
-  res.writeHead(status, {
-    'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*'
-  });
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
   res.end(data);
 }
 
@@ -122,39 +116,17 @@ const server = http.createServer((req, res) => {
     req.on('data', c => body += c);
     req.on('end', async () => {
       let msg;
-      try {
-        msg = JSON.parse(body);
-      } catch (e) {
-        sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } });
-        return;
-      }
+      try { msg = JSON.parse(body); }
+      catch (e) { sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); return; }
 
       const { id, method, params } = msg;
 
       if (method === 'initialize') {
-        sendJson(res, 200, {
-          jsonrpc: '2.0',
-          id,
-          result: {
-            protocolVersion: '2025-03-26',
-            capabilities: { tools: {} },
-            serverInfo: { name: 'mem0-simple-proxy', version: '1.3.0-debug' }
-          }
-        });
+        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '1.4.0-debug' } } });
         return;
       }
-
-      if (method === 'notifications/initialized') {
-        res.writeHead(202);
-        res.end();
-        return;
-      }
-
-      if (method === 'tools/list') {
-        sendJson(res, 200, { jsonrpc: '2.0', id, result: { tools: TOOLS } });
-        return;
-      }
-
+      if (method === 'notifications/initialized') { res.writeHead(202); res.end(); return; }
+      if (method === 'tools/list') { sendJson(res, 200, { jsonrpc: '2.0', id, result: { tools: TOOLS } }); return; }
       if (method === 'tools/call') {
         try {
           const result = await handleToolCall(params.name, params.arguments || {});
@@ -164,7 +136,6 @@ const server = http.createServer((req, res) => {
         }
         return;
       }
-
       sendJson(res, 200, { jsonrpc: '2.0', id, error: { code: -32601, message: 'Method not found: ' + method } });
     });
     return;
