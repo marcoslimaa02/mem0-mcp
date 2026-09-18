@@ -10,10 +10,7 @@ const SECTORS = ['work', 'studies', 'random'];
 function callMem0Raw(method, path, body) {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : null;
-    const headers = {
-      'Authorization': 'Token ' + MEM0_API_KEY,
-      'Content-Type': 'application/json'
-    };
+    const headers = { 'Authorization': 'Token ' + MEM0_API_KEY, 'Content-Type': 'application/json' };
     if (data) headers['Content-Length'] = Buffer.byteLength(data);
     const req = https.request({ hostname: 'api.mem0.ai', path, method, headers }, res => {
       let chunks = '';
@@ -32,50 +29,34 @@ function callMem0Raw(method, path, body) {
 function callMem0(path, body) { return callMem0Raw('POST', path, body); }
 
 const TOOLS = [
-  {
-    name: 'add_memory',
-    description: 'Store a new memory for the user, tagged with a sector.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        text: { type: 'string' },
-        sector: { type: 'string', enum: SECTORS }
-      },
-      required: ['text', 'sector']
-    }
-  },
-  {
-    name: 'search_memories',
-    description: 'Search stored memories for the user, optionally scoped to one sector.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string' },
-        sector: { type: 'string', enum: SECTORS.concat(['all']) }
-      },
-      required: ['query']
-    }
-  },
-  {
-    name: 'debug_search',
-    description: 'DEBUG raw search.',
-    inputSchema: { type: 'object', properties: { query: { type: 'string' }, filters_json: { type: 'string' } }, required: ['query', 'filters_json'] }
-  },
-  {
-    name: 'debug_event',
-    description: 'DEBUG get event status by id.',
-    inputSchema: { type: 'object', properties: { event_id: { type: 'string' } }, required: ['event_id'] }
-  }
+  { name: 'add_memory', description: 'Store a new memory for the user, tagged with a sector.',
+    inputSchema: { type: 'object', properties: { text: { type: 'string' }, sector: { type: 'string', enum: SECTORS } }, required: ['text', 'sector'] } },
+  { name: 'search_memories', description: 'Search stored memories for the user, optionally scoped to one sector.',
+    inputSchema: { type: 'object', properties: { query: { type: 'string' }, sector: { type: 'string', enum: SECTORS.concat(['all']) } }, required: ['query'] } },
+  { name: 'consolidate_memories', description: 'Merge and compact all memories in a sector into fewer, denser memories, deleting the originals. Use occasionally to keep the memory base from growing unbounded, not on every conversation.',
+    inputSchema: { type: 'object', properties: { sector: { type: 'string', enum: SECTORS } }, required: ['sector'] } }
 ];
+
+async function listSectorMemories(sector) {
+  let all = [];
+  let page = 1;
+  while (true) {
+    const r = await callMem0('/v3/memories/?page=' + page + '&page_size=100', {
+      filters: { user_id: DEFAULT_USER_ID, agent_id: sector }
+    });
+    const items = (r.json && (r.json.results || r.json.memories || r.json.data)) || [];
+    all = all.concat(items);
+    if (!items.length || items.length < 100) break;
+    page += 1;
+    if (page > 10) break;
+  }
+  return all;
+}
 
 async function handleToolCall(name, args) {
   if (name === 'add_memory') {
     const sector = SECTORS.includes(args.sector) ? args.sector : 'random';
-    const r = await callMem0('/v3/memories/add/', {
-      messages: [{ role: 'user', content: args.text }],
-      user_id: DEFAULT_USER_ID,
-      agent_id: sector
-    });
+    const r = await callMem0('/v3/memories/add/', { messages: [{ role: 'user', content: args.text }], user_id: DEFAULT_USER_ID, agent_id: sector });
     return { content: [{ type: 'text', text: JSON.stringify(r.json) }] };
   }
   if (name === 'search_memories') {
@@ -83,17 +64,29 @@ async function handleToolCall(name, args) {
       ? { user_id: DEFAULT_USER_ID, agent_id: args.sector }
       : { user_id: DEFAULT_USER_ID };
     const r = await callMem0('/v3/memories/search/', { query: args.query, filters });
-    return { content: [{ type: 'text', text: JSON.stringify(r) }] };
+    return { content: [{ type: 'text', text: JSON.stringify(r.json) }] };
   }
-  if (name === 'debug_search') {
-    let filters;
-    try { filters = JSON.parse(args.filters_json); } catch (e) { return { content: [{ type: 'text', text: 'bad json' }] }; }
-    const r = await callMem0('/v3/memories/search/', { query: args.query, filters });
-    return { content: [{ type: 'text', text: JSON.stringify(r) }] };
-  }
-  if (name === 'debug_event') {
-    const r = await callMem0Raw('GET', '/v1/event/' + args.event_id + '/', null);
-    return { content: [{ type: 'text', text: JSON.stringify(r) }] };
+  if (name === 'consolidate_memories') {
+    const sector = SECTORS.includes(args.sector) ? args.sector : 'random';
+    const items = await listSectorMemories(sector);
+    if (items.length < 5) {
+      return { content: [{ type: 'text', text: JSON.stringify({ skipped: true, reason: 'fewer than 5 memories, not worth consolidating', count: items.length }) }] };
+    }
+    const combinedText = items.map(m => '- ' + (m.memory || m.text || '')).join('\n');
+    const addResult = await callMem0('/v3/memories/add/', {
+      messages: [{ role: 'user', content: 'Here is a list of previously stored facts. Extract and keep the distinct, still-relevant ones:\n' + combinedText }],
+      user_id: DEFAULT_USER_ID,
+      agent_id: sector,
+      metadata: { consolidated: true }
+    });
+    let deleted = 0;
+    for (const m of items) {
+      const id = m.id || m.memory_id;
+      if (!id) continue;
+      await callMem0Raw('DELETE', '/v1/memories/' + id + '/', null);
+      deleted += 1;
+    }
+    return { content: [{ type: 'text', text: JSON.stringify({ before_count: items.length, deleted, add_event: addResult.json }) }] };
   }
   return { content: [{ type: 'text', text: 'Unknown tool: ' + name }], isError: true };
 }
@@ -105,12 +98,7 @@ function sendJson(res, status, obj) {
 }
 
 const server = http.createServer((req, res) => {
-  if (req.method === 'GET' && req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('ok');
-    return;
-  }
-
+  if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('ok'); return; }
   if (req.method === 'POST' && req.url === '/mcp') {
     let body = '';
     req.on('data', c => body += c);
@@ -118,11 +106,9 @@ const server = http.createServer((req, res) => {
       let msg;
       try { msg = JSON.parse(body); }
       catch (e) { sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); return; }
-
       const { id, method, params } = msg;
-
       if (method === 'initialize') {
-        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '1.4.0-debug' } } });
+        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '2.0.0' } } });
         return;
       }
       if (method === 'notifications/initialized') { res.writeHead(202); res.end(); return; }
@@ -140,7 +126,6 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-
   res.writeHead(404, { 'Content-Type': 'text/plain' });
   res.end('Not Found');
 });
