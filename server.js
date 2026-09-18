@@ -33,25 +33,11 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { text: { type: 'string' }, sector: { type: 'string', enum: SECTORS } }, required: ['text', 'sector'] } },
   { name: 'search_memories', description: 'Search stored memories for the user, optionally scoped to one sector.',
     inputSchema: { type: 'object', properties: { query: { type: 'string' }, sector: { type: 'string', enum: SECTORS.concat(['all']) } }, required: ['query'] } },
-  { name: 'consolidate_memories', description: 'Merge and compact all memories in a sector into fewer, denser memories, deleting the originals. Use occasionally to keep the memory base from growing unbounded, not on every conversation.',
-    inputSchema: { type: 'object', properties: { sector: { type: 'string', enum: SECTORS } }, required: ['sector'] } }
+  { name: 'consolidate_memories', description: 'Merge and compact all memories in a sector into fewer, denser memories, deleting the originals.',
+    inputSchema: { type: 'object', properties: { sector: { type: 'string', enum: SECTORS } }, required: ['sector'] } },
+  { name: 'debug_list_all', description: 'DEBUG: list all memories for the user, no sector filter, compact summary.',
+    inputSchema: { type: 'object', properties: {} } }
 ];
-
-async function listSectorMemories(sector) {
-  let all = [];
-  let page = 1;
-  while (true) {
-    const r = await callMem0('/v3/memories/?page=' + page + '&page_size=100', {
-      filters: { user_id: DEFAULT_USER_ID, agent_id: sector }
-    });
-    const items = (r.json && (r.json.results || r.json.memories || r.json.data)) || [];
-    all = all.concat(items);
-    if (!items.length || items.length < 100) break;
-    page += 1;
-    if (page > 10) break;
-  }
-  return all;
-}
 
 async function handleToolCall(name, args) {
   if (name === 'add_memory') {
@@ -68,17 +54,13 @@ async function handleToolCall(name, args) {
   }
   if (name === 'consolidate_memories') {
     const sector = SECTORS.includes(args.sector) ? args.sector : 'random';
-    const items = await listSectorMemories(sector);
+    const r = await callMem0('/v3/memories/?page=1&page_size=100', { filters: { user_id: DEFAULT_USER_ID, agent_id: sector } });
+    const items = (r.json && (r.json.results || r.json.memories || r.json.data)) || [];
     if (items.length < 5) {
-      return { content: [{ type: 'text', text: JSON.stringify({ skipped: true, reason: 'fewer than 5 memories, not worth consolidating', count: items.length }) }] };
+      return { content: [{ type: 'text', text: JSON.stringify({ skipped: true, count: items.length }) }] };
     }
     const combinedText = items.map(m => '- ' + (m.memory || m.text || '')).join('\n');
-    const addResult = await callMem0('/v3/memories/add/', {
-      messages: [{ role: 'user', content: 'Here is a list of previously stored facts. Extract and keep the distinct, still-relevant ones:\n' + combinedText }],
-      user_id: DEFAULT_USER_ID,
-      agent_id: sector,
-      metadata: { consolidated: true }
-    });
+    const addResult = await callMem0('/v3/memories/add/', { messages: [{ role: 'user', content: 'Consolidate:\n' + combinedText }], user_id: DEFAULT_USER_ID, agent_id: sector });
     let deleted = 0;
     for (const m of items) {
       const id = m.id || m.memory_id;
@@ -86,7 +68,17 @@ async function handleToolCall(name, args) {
       await callMem0Raw('DELETE', '/v1/memories/' + id + '/', null);
       deleted += 1;
     }
-    return { content: [{ type: 'text', text: JSON.stringify({ before_count: items.length, deleted, add_event: addResult.json }) }] };
+    return { content: [{ type: 'text', text: JSON.stringify({ before_count: items.length, deleted }) }] };
+  }
+  if (name === 'debug_list_all') {
+    const r = await callMem0('/v3/memories/?page=1&page_size=50', { filters: { user_id: DEFAULT_USER_ID } });
+    const items = (r.json && (r.json.results || r.json.memories || r.json.data)) || [];
+    const summary = items.map(m => ({
+      memory: m.memory ? String(m.memory).slice(0, 50) : null,
+      agent_id: m.agent_id === undefined ? 'MISSING_KEY' : m.agent_id,
+      keys: Object.keys(m)
+    }));
+    return { content: [{ type: 'text', text: JSON.stringify({ status: r.status, raw_top_keys: Object.keys(r.json || {}), count: items.length, summary: summary.slice(0, 5) }) }] };
   }
   return { content: [{ type: 'text', text: 'Unknown tool: ' + name }], isError: true };
 }
@@ -108,7 +100,7 @@ const server = http.createServer((req, res) => {
       catch (e) { sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); return; }
       const { id, method, params } = msg;
       if (method === 'initialize') {
-        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '2.0.0' } } });
+        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '2.1.0-debug' } } });
         return;
       }
       if (method === 'notifications/initialized') { res.writeHead(202); res.end(); return; }
