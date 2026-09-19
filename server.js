@@ -1,9 +1,11 @@
 const http = require('http');
 const https = require('https');
+const { parse: parseUrl } = require('url');
 
 const PORT = process.env.PORT || 8000;
 const MEM0_API_KEY = process.env.MEM0_API_KEY || '';
 const DEFAULT_USER_ID = process.env.DEFAULT_USER_ID || '';
+const PROXY_SECRET = process.env.PROXY_SECRET || '';
 
 const SECTORS = ['work', 'studies', 'random'];
 
@@ -124,9 +126,24 @@ function sendJson(res, status, obj) {
   res.end(data);
 }
 
+// --- Shared-secret hardening ---
+// The connector URL registered in Claude/ChatGPT includes ?key=<PROXY_SECRET>.
+// A query param (not a custom header) is used because custom MCP connector
+// setups in Claude/ChatGPT let you paste a full URL but not add arbitrary
+// headers. If PROXY_SECRET is unset, the check is skipped (local/dev use).
+function isAuthorized(req) {
+  if (!PROXY_SECRET) return true;
+  const { query } = parseUrl(req.url, true);
+  return query.key === PROXY_SECRET;
+}
+
 const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('ok'); return; }
-  if (req.method === 'POST' && req.url === '/mcp') {
+  if (req.method === 'POST' && req.url.split('?')[0] === '/mcp') {
+    if (!isAuthorized(req)) {
+      sendJson(res, 401, { jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Unauthorized: missing or invalid key' } });
+      return;
+    }
     let body = '';
     req.on('data', c => body += c);
     req.on('end', async () => {
@@ -135,7 +152,7 @@ const server = http.createServer((req, res) => {
       catch (e) { sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); return; }
       const { id, method, params } = msg;
       if (method === 'initialize') {
-        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '5.0.0' } } });
+        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '6.0.0' } } });
         return;
       }
       if (method === 'notifications/initialized') { res.writeHead(202); res.end(); return; }
