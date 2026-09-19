@@ -127,12 +127,16 @@ function sendJson(res, status, obj) {
 }
 
 // --- Shared-secret hardening ---
-// The connector URL registered in Claude/ChatGPT includes ?key=<PROXY_SECRET>.
-// A query param (not a custom header) is used because custom MCP connector
-// setups in Claude/ChatGPT let you paste a full URL but not add arbitrary
-// headers. If PROXY_SECRET is unset, the check is skipped (local/dev use).
+// Checked as a request header (X-Proxy-Key), since that's what Claude's custom
+// connector UI actually supports injecting on every request ('Request headers'
+// field at setup) - a ?key= query param does NOT work, because Claude's own
+// server probe (used to detect the auth type) does not reliably carry query
+// strings through, so it sees a 401 and mis-detects the server as OAuth-only.
+// A query param is still accepted too, for direct/manual calls.
 function isAuthorized(req) {
   if (!PROXY_SECRET) return true;
+  const headerKey = req.headers['x-proxy-key'];
+  if (headerKey === PROXY_SECRET) return true;
   const { query } = parseUrl(req.url, true);
   return query.key === PROXY_SECRET;
 }
@@ -152,7 +156,7 @@ const server = http.createServer((req, res) => {
       catch (e) { sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); return; }
       const { id, method, params } = msg;
       if (method === 'initialize') {
-        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '6.0.0' } } });
+        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '7.0.0' } } });
         return;
       }
       if (method === 'notifications/initialized') { res.writeHead(202); res.end(); return; }
