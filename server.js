@@ -7,6 +7,23 @@ const DEFAULT_USER_ID = process.env.DEFAULT_USER_ID || '';
 
 const SECTORS = ['work', 'studies', 'random'];
 
+// --- Daily usage tracking (the start of the orchestrator's rate-limit logic) ---
+// Mem0 free tier: 1,000 searches/month (~33/day), 10,000 adds/month (~333/day).
+// We apply a safety margin below the raw daily average, per the PLAN.md formula.
+const SEARCH_DAILY_LIMIT = 30;
+const ADD_DAILY_LIMIT = 300;
+
+function todayKey() {
+  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+}
+
+let usage = { date: todayKey(), search: 0, add: 0 };
+
+function resetIfNewDay() {
+  const t = todayKey();
+  if (usage.date !== t) usage = { date: t, search: 0, add: 0 };
+}
+
 function callMem0Raw(method, path, body) {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : null;
@@ -31,10 +48,12 @@ function callMem0(path, body) { return callMem0Raw('POST', path, body); }
 const TOOLS = [
   { name: 'add_memory', description: 'Store a new memory for the user, tagged with a sector: work (Odoo/Lotts), studies (college), or random (everything else).',
     inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'The memory text to store.' }, sector: { type: 'string', enum: SECTORS, description: 'Which sector this memory belongs to.' } }, required: ['text', 'sector'] } },
-  { name: 'search_memories', description: 'Search stored memories for the user, optionally scoped to one sector.',
+  { name: 'search_memories', description: 'Search stored memories for the user, optionally scoped to one sector. Subject to a daily budget; may be deferred if today\'s budget is used up.',
     inputSchema: { type: 'object', properties: { query: { type: 'string' }, sector: { type: 'string', enum: SECTORS.concat(['all']), description: 'Limit to one sector, or all to search everything.' } }, required: ['query'] } },
   { name: 'consolidate_memories', description: 'Merge and compact all memories in a sector into fewer, denser memories, deleting the originals. Use occasionally, not on every conversation.',
-    inputSchema: { type: 'object', properties: { sector: { type: 'string', enum: SECTORS } }, required: ['sector'] } }
+    inputSchema: { type: 'object', properties: { sector: { type: 'string', enum: SECTORS } }, required: ['sector'] } },
+  { name: 'get_usage', description: 'Check today\'s Mem0 usage so far (add_memory and search_memories call counts) against the daily budget, before deciding whether to make more calls.',
+    inputSchema: { type: 'object', properties: {} } }
 ];
 
 function sectorFilters(sector) {
@@ -49,15 +68,35 @@ async function listSectorMemories(sector) {
 }
 
 async function handleToolCall(name, args) {
+  resetIfNewDay();
+
+  if (name === 'get_usage') {
+    return { content: [{ type: 'text', text: JSON.stringify({
+      date: usage.date,
+      search: { used: usage.search, limit: SEARCH_DAILY_LIMIT, remaining: Math.max(0, SEARCH_DAILY_LIMIT - usage.search) },
+      add: { used: usage.add, limit: ADD_DAILY_LIMIT, remaining: Math.max(0, ADD_DAILY_LIMIT - usage.add) }
+    }) }] };
+  }
+
   if (name === 'add_memory') {
+    if (usage.add >= ADD_DAILY_LIMIT) {
+      return { content: [{ type: 'text', text: JSON.stringify({ deferred: true, reason: 'Daily add_memory budget (' + ADD_DAILY_LIMIT + ') reached for today. Try again tomorrow.' }) }] };
+    }
     const sector = SECTORS.includes(args.sector) ? args.sector : 'random';
     const r = await callMem0('/v3/memories/add/', { messages: [{ role: 'user', content: args.text }], user_id: DEFAULT_USER_ID, metadata: { sector: sector } });
+    usage.add += 1;
     return { content: [{ type: 'text', text: JSON.stringify(r.json) }] };
   }
+
   if (name === 'search_memories') {
+    if (usage.search >= SEARCH_DAILY_LIMIT) {
+      return { content: [{ type: 'text', text: JSON.stringify({ deferred: true, reason: 'Daily search_memories budget (' + SEARCH_DAILY_LIMIT + ') reached for today. Answer without a memory search, or try again tomorrow.', usage_left: 0 }) }] };
+    }
     const r = await callMem0('/v3/memories/search/', { query: args.query, filters: sectorFilters(args.sector) });
+    usage.search += 1;
     return { content: [{ type: 'text', text: JSON.stringify(r.json) }] };
   }
+
   if (name === 'consolidate_memories') {
     const sector = SECTORS.includes(args.sector) ? args.sector : 'random';
     const items = await listSectorMemories(sector);
@@ -66,6 +105,7 @@ async function handleToolCall(name, args) {
     }
     const combinedText = items.map(m => '- ' + (m.memory || '')).join('\n');
     const addResult = await callMem0('/v3/memories/add/', { messages: [{ role: 'user', content: 'Consolidate these facts, keeping only the distinct still-relevant ones:\n' + combinedText }], user_id: DEFAULT_USER_ID, metadata: { sector: sector, consolidated: true } });
+    usage.add += 1;
     let deleted = 0;
     for (const m of items) {
       if (!m.id) continue;
@@ -74,6 +114,7 @@ async function handleToolCall(name, args) {
     }
     return { content: [{ type: 'text', text: JSON.stringify({ before_count: items.length, deleted, add_status: addResult.json && addResult.json.status }) }] };
   }
+
   return { content: [{ type: 'text', text: 'Unknown tool: ' + name }], isError: true };
 }
 
@@ -94,7 +135,7 @@ const server = http.createServer((req, res) => {
       catch (e) { sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); return; }
       const { id, method, params } = msg;
       if (method === 'initialize') {
-        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '4.0.0' } } });
+        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '5.0.0' } } });
         return;
       }
       if (method === 'notifications/initialized') { res.writeHead(202); res.end(); return; }
