@@ -9,22 +9,12 @@ const PROXY_SECRET = process.env.PROXY_SECRET || '';
 
 const SECTORS = ['work', 'studies', 'random'];
 
-// --- Daily usage tracking (the start of the orchestrator's rate-limit logic) ---
-// Mem0 free tier: 1,000 searches/month (~33/day), 10,000 adds/month (~333/day).
-// We apply a safety margin below the raw daily average, per the PLAN.md formula.
 const SEARCH_DAILY_LIMIT = 30;
 const ADD_DAILY_LIMIT = 300;
 
-function todayKey() {
-  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
-}
-
+function todayKey() { return new Date().toISOString().slice(0, 10); }
 let usage = { date: todayKey(), search: 0, add: 0 };
-
-function resetIfNewDay() {
-  const t = todayKey();
-  if (usage.date !== t) usage = { date: t, search: 0, add: 0 };
-}
+function resetIfNewDay() { const t = todayKey(); if (usage.date !== t) usage = { date: t, search: 0, add: 0 }; }
 
 function callMem0Raw(method, path, body) {
   return new Promise((resolve, reject) => {
@@ -44,7 +34,6 @@ function callMem0Raw(method, path, body) {
     req.end();
   });
 }
-
 function callMem0(path, body) { return callMem0Raw('POST', path, body); }
 
 const TOOLS = [
@@ -71,7 +60,6 @@ async function listSectorMemories(sector) {
 
 async function handleToolCall(name, args) {
   resetIfNewDay();
-
   if (name === 'get_usage') {
     return { content: [{ type: 'text', text: JSON.stringify({
       date: usage.date,
@@ -79,7 +67,6 @@ async function handleToolCall(name, args) {
       add: { used: usage.add, limit: ADD_DAILY_LIMIT, remaining: Math.max(0, ADD_DAILY_LIMIT - usage.add) }
     }) }] };
   }
-
   if (name === 'add_memory') {
     if (usage.add >= ADD_DAILY_LIMIT) {
       return { content: [{ type: 'text', text: JSON.stringify({ deferred: true, reason: 'Daily add_memory budget (' + ADD_DAILY_LIMIT + ') reached for today. Try again tomorrow.' }) }] };
@@ -89,7 +76,6 @@ async function handleToolCall(name, args) {
     usage.add += 1;
     return { content: [{ type: 'text', text: JSON.stringify(r.json) }] };
   }
-
   if (name === 'search_memories') {
     if (usage.search >= SEARCH_DAILY_LIMIT) {
       return { content: [{ type: 'text', text: JSON.stringify({ deferred: true, reason: 'Daily search_memories budget (' + SEARCH_DAILY_LIMIT + ') reached for today. Answer without a memory search, or try again tomorrow.', usage_left: 0 }) }] };
@@ -98,7 +84,6 @@ async function handleToolCall(name, args) {
     usage.search += 1;
     return { content: [{ type: 'text', text: JSON.stringify(r.json) }] };
   }
-
   if (name === 'consolidate_memories') {
     const sector = SECTORS.includes(args.sector) ? args.sector : 'random';
     const items = await listSectorMemories(sector);
@@ -116,7 +101,6 @@ async function handleToolCall(name, args) {
     }
     return { content: [{ type: 'text', text: JSON.stringify({ before_count: items.length, deleted, add_status: addResult.json && addResult.json.status }) }] };
   }
-
   return { content: [{ type: 'text', text: 'Unknown tool: ' + name }], isError: true };
 }
 
@@ -126,17 +110,10 @@ function sendJson(res, status, obj) {
   res.end(data);
 }
 
-// --- Shared-secret hardening ---
-// Checked as a request header (X-Proxy-Key), since that's what Claude's custom
-// connector UI actually supports injecting on every request ('Request headers'
-// field at setup) - a ?key= query param does NOT work, because Claude's own
-// server probe (used to detect the auth type) does not reliably carry query
-// strings through, so it sees a 401 and mis-detects the server as OAuth-only.
-// A query param is still accepted too, for direct/manual calls.
 function isAuthorized(req) {
   if (!PROXY_SECRET) return true;
-  const headerKey = req.headers['x-proxy-key'];
-  if (headerKey === PROXY_SECRET) return true;
+  if (req.headers['x-account-key'] === PROXY_SECRET) return true;
+  if (req.headers['x-proxy-key'] === PROXY_SECRET) return true;
   const { query } = parseUrl(req.url, true);
   return query.key === PROXY_SECRET;
 }
@@ -156,7 +133,7 @@ const server = http.createServer((req, res) => {
       catch (e) { sendJson(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); return; }
       const { id, method, params } = msg;
       if (method === 'initialize') {
-        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '7.0.0' } } });
+        sendJson(res, 200, { jsonrpc: '2.0', id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'mem0-simple-proxy', version: '8.0.0' } } });
         return;
       }
       if (method === 'notifications/initialized') { res.writeHead(202); res.end(); return; }
