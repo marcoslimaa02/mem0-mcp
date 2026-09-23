@@ -80,7 +80,7 @@ async function handleToolCall(name, args) {
     if (usage.search >= SEARCH_DAILY_LIMIT) {
       return { content: [{ type: 'text', text: JSON.stringify({ deferred: true, reason: 'Daily search_memories budget (' + SEARCH_DAILY_LIMIT + ') reached for today. Answer without a memory search, or try again tomorrow.', usage_left: 0 }) }] };
     }
-    const r = await callMem0('/v3/memories/search/', { query: args.query, filters: sectorFilters(args.sector) });
+    const r = await callMem0('/v3/memories/search/', { query: args.query, filters: sectorFilters(args.sector), rerank: true });
     usage.search += 1;
     return { content: [{ type: 'text', text: JSON.stringify(r.json) }] };
   }
