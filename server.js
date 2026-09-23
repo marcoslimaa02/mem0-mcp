@@ -151,6 +151,30 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  if (req.method === 'POST' && req.url.split('?')[0] === '/quick-note') {
+      if (!isAuthorized(req)) {
+              sendJson(res, 401, { error: 'Unauthorized: missing or invalid key' });
+              return;
+      }
+      let qbody = '';
+      req.on('data', c => qbody += c);
+      req.on('end', async () => {
+              let payload;
+              try { payload = JSON.parse(qbody); }
+              catch (e) { sendJson(res, 400, { error: 'Parse error' }); return; }
+              const text = ((payload && payload.text) || '').trim();
+              if (!text) { sendJson(res, 400, { error: 'Missing text' }); return; }
+              resetIfNewDay();
+              if (usage.add >= ADD_DAILY_LIMIT) {
+                        sendJson(res, 200, { deferred: true, reason: 'Daily add_memory budget (' + ADD_DAILY_LIMIT + ') reached for today.' });
+                        return;
+              }
+              const r = await callMem0('/v3/memories/add/', { messages: [{ role: 'user', content: '[Quick capture] ' + text }], user_id: DEFAULT_USER_ID, metadata: { sector: 'work', quick_capture: true } });
+              usage.add += 1;
+              sendJson(res, 200, { ok: true, result: r.json });
+      });
+      return;
+}
   res.writeHead(404, { 'Content-Type': 'text/plain' });
   res.end('Not Found');
 });
